@@ -319,4 +319,20 @@ describe('Codex request translation', () => {
       'message_stop',
     ])
   })
+
+  test('errors instead of reporting a truncated stream as a successful turn', async () => {
+    // No response.completed/incomplete/failed — the connection drops mid-stream.
+    const responseText = [
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","item":{"id":"msg_1","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0,"sequence_number":0}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","content_index":0,"delta":"partial","item_id":"msg_1","output_index":0,"sequence_number":1}',
+      '',
+    ].join('\n')
+
+    await expect(collectStreamEventTypes(responseText)).rejects.toThrow(
+      'Codex response ended without a completed payload',
+    )
+  })
 })
