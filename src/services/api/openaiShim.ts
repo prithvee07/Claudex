@@ -568,6 +568,8 @@ async function* openaiStreamToAnthropic(
               type: 'content_block_stop',
               index: contentBlockIndex,
             }
+            contentBlockIndex++
+            hasEmittedContentStart = false
           }
           // Close active tool calls
           for (const [, tc] of activeToolCalls) {
@@ -625,6 +627,10 @@ async function* openaiStreamToAnthropic(
               type: 'content_block_delta',
               index: contentBlockIndex,
               delta: { type: 'text_delta', text: '\n\n[Content blocked by provider safety filter]' },
+            }
+            yield {
+              type: 'content_block_stop',
+              index: contentBlockIndex,
             }
           }
           lastStopReason = stopReason

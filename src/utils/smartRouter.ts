@@ -183,7 +183,7 @@ export class SmartRouter {
     this.initialized = true
   }
 
-  private async _pingProvider(state: ProviderState): Promise<void> {
+  private async _pingProvider(state: ProviderState, isRecoveryCheck = false): Promise<void> {
     if (!isConfigured(state)) {
       state.healthy = false
       return
@@ -200,11 +200,22 @@ export class SmartRouter {
     try {
       const res = await fetch(state.descriptor.pingUrl, { headers, signal: controller.signal })
       const elapsed = Date.now() - start
-      // 200/400/401/403 all mean the endpoint is reachable
-      if ([200, 400, 401, 403].includes(res.status)) {
+      // Preserve 400 reachability checks, but exclude authentication/permission failures.
+      if ([200, 400].includes(res.status)) {
         state.healthy = true
         state.latencyMs = elapsed
-        state.avgLatencyMs = elapsed
+        // A recovery re-check blends into the EMA built from real request
+        // timings instead of overwriting it with one ping. A startup ping
+        // (no requests recorded yet) has no EMA to preserve, so set directly.
+        state.avgLatencyMs = isRecoveryCheck
+          ? 0.3 * elapsed + 0.7 * state.avgLatencyMs
+          : elapsed
+        if (isRecoveryCheck) {
+          // Give the provider a clean error-rate window instead of judging
+          // it on the stale count that tripped it unhealthy in the first place.
+          state.requestCount = 0
+          state.errorCount = 0
+        }
       } else {
         state.healthy = false
       }
@@ -283,7 +294,7 @@ export class SmartRouter {
       if (state.requestCount >= 3 && errorRate > 0.7) {
         state.healthy = false
         // Re-check after 60 s
-        setTimeout(() => this._pingProvider(state), 60_000)
+        setTimeout(() => this._pingProvider(state, true), 60_000)
       }
     }
   }

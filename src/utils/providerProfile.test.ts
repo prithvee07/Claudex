@@ -10,6 +10,7 @@ import {
   buildCodexProfileEnv,
   buildGeminiProfileEnv,
   buildLaunchEnv,
+  buildNvidiaProfileEnv,
   buildOllamaProfileEnv,
   buildOpenAIProfileEnv,
   createProfileFile,
@@ -598,4 +599,25 @@ test('atomic-chat launch ignores mismatched persisted openai env', async () => {
   assert.equal(env.OPENAI_API_KEY, undefined)
   assert.equal(env.CODEX_API_KEY, undefined)
   assert.equal(env.CHATGPT_ACCOUNT_ID, undefined)
+})
+
+test('nvidia profile never falls back to an OPENAI_API_KEY', () => {
+  const env = buildNvidiaProfileEnv({
+    processEnv: {
+      OPENAI_API_KEY: 'sk-openai-should-not-leak',
+    },
+  })
+
+  assert.equal(env, null)
+})
+
+test('nvidia profile uses NVIDIA_API_KEY when present', () => {
+  const env = buildNvidiaProfileEnv({
+    processEnv: {
+      NVIDIA_API_KEY: 'nvapi-real-key',
+      OPENAI_API_KEY: 'sk-openai-should-not-leak',
+    },
+  })
+
+  assert.equal(env?.NVIDIA_API_KEY, 'nvapi-real-key')
 })

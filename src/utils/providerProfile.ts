@@ -357,7 +357,7 @@ export function buildNvidiaProfileEnv(options: {
   processEnv?: NodeJS.ProcessEnv
 }): ProfileEnv | null {
   const processEnv = options.processEnv ?? process.env
-  const key = sanitizeApiKey(options.apiKey ?? processEnv.NVIDIA_API_KEY ?? processEnv.OPENAI_API_KEY)
+  const key = sanitizeApiKey(options.apiKey ?? processEnv.NVIDIA_API_KEY)
   if (!key) return null
 
   return {
