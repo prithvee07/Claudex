@@ -86,3 +86,14 @@ pending. This branch builds on the earlier build and router fixes.
   1.3.11. Ubuntu and hosted Windows runs have not yet been verified.
 
 Intended delivery: a separate contribution branch and pull request.
+
+## Development and promotion workflow
+
+- Established `dev` from the completed build/router and Windows CI contribution
+  commits. Further contribution work belongs on `dev`.
+- Added `dev` and `test` to the PR Checks workflow's push triggers, alongside
+  `main`. Both operating-system jobs run for these pushes.
+- Added `CONTRIBUTING.md` documenting owner approval before promotion to `test`
+  and passing required checks on the tested revision before promotion to `main`.
+- No promotion to `test` or `main` was performed. Server-side branch protection
+  was not configured as part of these changes.
