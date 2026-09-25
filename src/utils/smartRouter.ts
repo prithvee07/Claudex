@@ -200,8 +200,8 @@ export class SmartRouter {
     try {
       const res = await fetch(state.descriptor.pingUrl, { headers, signal: controller.signal })
       const elapsed = Date.now() - start
-      // 200/400/401/403 all mean the endpoint is reachable
-      if ([200, 400, 401, 403].includes(res.status)) {
+      // Preserve 400 reachability checks, but exclude authentication/permission failures.
+      if ([200, 400].includes(res.status)) {
         state.healthy = true
         state.latencyMs = elapsed
         state.avgLatencyMs = elapsed
