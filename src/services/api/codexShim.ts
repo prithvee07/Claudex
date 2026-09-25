@@ -570,6 +570,33 @@ export async function performCodexRequest(options: {
   return response
 }
 
+function* parseSseChunk(chunk: string): Generator<CodexSseEvent> {
+  const lines = chunk
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return
+
+  const eventLine = lines.find(line => line.startsWith('event: '))
+  const dataLines = lines.filter(line => line.startsWith('data: '))
+  if (!eventLine || dataLines.length === 0) return
+
+  const event = eventLine.slice(7).trim()
+  const rawData = dataLines.map(line => line.slice(6)).join('\n')
+  if (rawData === '[DONE]') return
+
+  let data: Record<string, any>
+  try {
+    const parsed = JSON.parse(rawData)
+    if (!parsed || typeof parsed !== 'object') return
+    data = parsed as Record<string, any>
+  } catch {
+    return
+  }
+
+  yield { event, data }
+}
+
 async function* readSseEvents(response: Response): AsyncGenerator<CodexSseEvent> {
   const reader = response.body?.getReader()
   if (!reader) return
@@ -586,31 +613,16 @@ async function* readSseEvents(response: Response): AsyncGenerator<CodexSseEvent>
     buffer = chunks.pop() ?? ''
 
     for (const chunk of chunks) {
-      const lines = chunk
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
-      if (lines.length === 0) continue
-
-      const eventLine = lines.find(line => line.startsWith('event: '))
-      const dataLines = lines.filter(line => line.startsWith('data: '))
-      if (!eventLine || dataLines.length === 0) continue
-
-      const event = eventLine.slice(7).trim()
-      const rawData = dataLines.map(line => line.slice(6)).join('\n')
-      if (rawData === '[DONE]') continue
-
-      let data: Record<string, any>
-      try {
-        const parsed = JSON.parse(rawData)
-        if (!parsed || typeof parsed !== 'object') continue
-        data = parsed as Record<string, any>
-      } catch {
-        continue
-      }
-
-      yield { event, data }
+      yield* parseSseChunk(chunk)
     }
+  }
+
+  // A stream doesn't always end with a trailing blank-line separator before
+  // the connection closes — without this, whatever's left in `buffer` (often
+  // the final event, e.g. response.completed) is silently dropped, making a
+  // normal completion look identical to a truncated/dropped connection.
+  if (buffer.trim()) {
+    yield* parseSseChunk(buffer)
   }
 }
 
@@ -646,7 +658,7 @@ export async function collectCodexCompletedResponse(
     if (event.event === 'response.failed') {
       const msg = event.data?.response?.error?.message ??
         event.data?.error?.message ?? 'Codex response failed'
-      throw APIError.generate(500, undefined, msg, {} as Record<string, string>)
+      throw APIError.generate(500, undefined, msg, new Headers() as unknown as Record<string, string>)
     }
 
     if (
@@ -661,7 +673,7 @@ export async function collectCodexCompletedResponse(
   if (!completedResponse) {
     throw APIError.generate(
       500, undefined, 'Codex response ended without a completed payload',
-      {} as Record<string, string>,
+      new Headers() as unknown as Record<string, string>,
     )
   }
 
@@ -820,8 +832,20 @@ export async function* codexStreamToAnthropic(
     if (event.event === 'response.failed') {
       const msg = payload?.response?.error?.message ??
         payload?.error?.message ?? 'Codex response failed'
-      throw APIError.generate(500, undefined, msg, {} as Record<string, string>)
+      throw APIError.generate(500, undefined, msg, new Headers() as unknown as Record<string, string>)
     }
+  }
+
+  if (!finalResponse) {
+    // Stream ended (connection drop, proxy timeout, truncated response)
+    // without ever emitting response.completed/incomplete/failed. Match
+    // collectCodexCompletedResponse's non-streaming behavior: error instead
+    // of silently reporting a truncated turn as a normal 'end_turn' success
+    // with zero usage, which would otherwise look like nothing went wrong.
+    throw APIError.generate(
+      500, undefined, 'Codex response ended without a completed payload',
+      new Headers() as unknown as Record<string, string>,
+    )
   }
 
   yield* closeActiveTextBlock()

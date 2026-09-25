@@ -369,15 +369,23 @@ function finishProfileSave(
     const profileFile = createProfileFile(profile, env)
     const filePath = saveProfileFile(profileFile)
     
-    // Also store credentials in global config for persistence
-    const apiKey = env.OPENAI_API_KEY || env.GEMINI_API_KEY || env.NVIDIA_API_KEY || env.CODEX_API_KEY
+    // Also store credentials in global config for persistence. Select by
+    // the profile being saved rather than an OR-chain over env fields —
+    // each builder in providerProfile.ts happens to populate only its own
+    // provider's fields today, but guessing by "whichever field is set"
+    // would silently grab the wrong provider's key the moment that stops
+    // being true (same bug class as the NVIDIA/OPENAI key fallback fixed
+    // earlier this session).
+    const { apiKey, baseUrl, model } =
+      profile === 'nvidia'
+        ? { apiKey: env.NVIDIA_API_KEY, baseUrl: env.NVIDIA_BASE_URL, model: env.NVIDIA_MODEL }
+        : profile === 'gemini'
+          ? { apiKey: env.GEMINI_API_KEY, baseUrl: env.GEMINI_BASE_URL, model: env.GEMINI_MODEL }
+          : profile === 'codex'
+            ? { apiKey: env.CODEX_API_KEY, baseUrl: env.OPENAI_BASE_URL, model: env.OPENAI_MODEL }
+            : { apiKey: env.OPENAI_API_KEY, baseUrl: env.OPENAI_BASE_URL, model: env.OPENAI_MODEL }
     if (apiKey) {
-      storeProviderCredentials({
-        provider: profile,
-        apiKey,
-        baseUrl: env.OPENAI_BASE_URL || env.GEMINI_BASE_URL || env.NVIDIA_BASE_URL,
-        model: env.OPENAI_MODEL || env.GEMINI_MODEL || env.NVIDIA_MODEL,
-      })
+      storeProviderCredentials({ provider: profile, apiKey, baseUrl, model })
     }
     
     onDone(buildProfileSaveMessage(profile, env, filePath), {

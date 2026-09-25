@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from 'bun:test'
-import { SmartRouter, type ProviderDescriptor } from './smartRouter.js'
+import { applyRouteDecisionToEnv, SmartRouter, type ProviderDescriptor } from './smartRouter.js'
 
 const originalFetch = globalThis.fetch
 
@@ -90,4 +90,28 @@ test('recovery re-check gives a tripped provider a fresh error window', async ()
   } finally {
     globalThis.setTimeout = originalSetTimeout
   }
+})
+
+test('applyRouteDecisionToEnv clears a conflicting provider flag left by a prior profile', () => {
+  const env: NodeJS.ProcessEnv = {
+    CLAUDE_CODE_USE_GEMINI: '1',
+    GEMINI_API_KEY: 'stale-gemini-key',
+    UNRELATED_VAR: 'kept',
+  }
+
+  applyRouteDecisionToEnv(env, {
+    provider: 'openai',
+    model: 'gpt-4o',
+    env: {
+      CLAUDE_CODE_USE_OPENAI: '1',
+      OPENAI_BASE_URL: 'https://api.openai.com/v1',
+      OPENAI_MODEL: 'gpt-4o',
+      OPENAI_API_KEY: 'sk-live',
+    },
+  })
+
+  expect(env.CLAUDE_CODE_USE_GEMINI).toBeUndefined()
+  expect(env.CLAUDE_CODE_USE_OPENAI).toBe('1')
+  expect(env.OPENAI_API_KEY).toBe('sk-live')
+  expect(env.UNRELATED_VAR).toBe('kept')
 })
