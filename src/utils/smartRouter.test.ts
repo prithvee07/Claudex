@@ -115,3 +115,32 @@ test('applyRouteDecisionToEnv clears a conflicting provider flag left by a prior
   expect(env.OPENAI_API_KEY).toBe('sk-live')
   expect(env.UNRELATED_VAR).toBe('kept')
 })
+
+test('applyRouteDecisionToEnv clears a stale model from a prior profile of a different provider', () => {
+  // Reproduces a live bug: getUserSpecifiedModelSetting() (model.ts) checks
+  // NVIDIA_MODEL before OPENAI_MODEL, so a saved NVIDIA profile's leftover
+  // NVIDIA_MODEL survived a route() decision to Ollama — the provider
+  // switched correctly (new base URL/key) but the request still asked for
+  // NVIDIA's model name, which the new provider didn't have.
+  const env: NodeJS.ProcessEnv = {
+    CLAUDE_CODE_USE_NVIDIA: '1',
+    NVIDIA_API_KEY: 'stale-nvidia-key',
+    NVIDIA_BASE_URL: 'https://integrate.api.nvidia.com/v1',
+    NVIDIA_MODEL: 'moonshotai/kimi-k2-instruct',
+  }
+
+  applyRouteDecisionToEnv(env, {
+    provider: 'ollama',
+    model: 'llama3.1:8b',
+    env: {
+      CLAUDE_CODE_USE_OPENAI: '1',
+      OPENAI_BASE_URL: 'http://localhost:11434/v1',
+      OPENAI_MODEL: 'llama3.1:8b',
+    },
+  })
+
+  expect(env.NVIDIA_MODEL).toBeUndefined()
+  expect(env.NVIDIA_API_KEY).toBeUndefined()
+  expect(env.NVIDIA_BASE_URL).toBeUndefined()
+  expect(env.OPENAI_MODEL).toBe('llama3.1:8b')
+})

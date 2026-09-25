@@ -364,3 +364,61 @@ the same class of cross-provider credential bug found earlier.
   and normal invocation is unaffected.
 - `ROUTER_MODE=smart node dist/cli.mjs --print "test"`: manually verified
   live end-to-end (see Smart Router entry above).
+
+## QA pass: live end-to-end testing surfaced one real Smart Router bug
+
+Live-ran the built CLI (not just unit tests) against a real local Ollama
+instance and a real saved NVIDIA profile on the dev machine, per the `run`
+skill's "drive it, don't just launch it" guidance. This caught a bug the
+unit tests for the previous entry's Smart Router wiring had missed.
+
+### Fixed
+
+- **Stale model surviving a Smart Router provider switch**
+  (`src/utils/smartRouter.ts`): `applyRouteDecisionToEnv()`'s clear-list
+  only cleared the `CLAUDE_CODE_USE_*` flags, not the per-provider
+  `*_API_KEY`/`*_BASE_URL`/`*_MODEL` vars. Reproduced live: with a saved
+  NVIDIA profile on disk and `ROUTER_MODE=smart` routing the session to
+  Ollama instead, the provider switch correctly changed the endpoint/key,
+  but `getUserSpecifiedModelSetting()` (`src/utils/model/model.ts:82`)
+  checks `NVIDIA_MODEL` before `OPENAI_MODEL` — the leftover
+  `NVIDIA_MODEL=moonshotai/kimi-k2-instruct` from the profile won over the
+  router's `llama3.1:8b` choice, so the request went to Ollama's endpoint
+  asking for NVIDIA's model name. Same bug class, same root cause
+  (incomplete env-clearing) as the two `credentialManager.ts` fixes in the
+  previous entry — just missed in this file specifically because its unit
+  test only checked the flag/key fields, not the model field. Expanded the
+  clear-list to match `credentialManager.ts`'s `OTHER_PROVIDER_ENV_VARS`,
+  added a regression test that reproduces the exact live scenario, and
+  re-verified the real repro is fixed (error now correctly references
+  `llama3.1:8b`, not the stale NVIDIA model).
+
+### Investigated, not a regression
+
+- An intermittent `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING),
+  file src\win\async.c, line 94` after certain API errors on Windows.
+  Reproduced 2-3 times out of 3 runs both on this session's build and on a
+  clean worktree checkout of the pre-session commit (`f02c9a4`), confirming
+  it predates every change made in this contribution — a native
+  libuv/Node async-handle-cleanup race on process exit, specific to
+  Windows, unrelated to application code. Not fixed as part of this pass;
+  noting it for whoever next touches process-exit handling on Windows.
+
+### Validation recorded during implementation
+
+- `bun test src/utils/smartRouter.test.ts`: 7/7 pass (6 pre-existing + 1
+  new).
+- `bun run test:provider`: 67/67 pass across 10 files.
+- `bun run test:provider-recommendation`: 43/43 pass across 2 files.
+- `node --test bin/import-specifier.test.mjs`: 2/2 pass.
+- `bun run smoke`: passed.
+- `git diff --check`: passed (no whitespace errors).
+- `ROUTER_MODE=smart node dist/cli.mjs --print "test"` (real local Ollama +
+  real saved NVIDIA profile on the dev machine): reproduced the stale-model
+  bug live, then re-ran after the fix and confirmed the error now
+  references the router's actual chosen model instead of the stale one.
+- `claudex telegram permit`/`revoke` with no config present: confirmed
+  clean error messages and exit code 1, no stray files created.
+- Baseline comparison via an isolated `git worktree` at commit `f02c9a4`
+  (removed after use) to confirm the libuv crash above predates this
+  session's changes.

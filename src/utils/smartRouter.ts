@@ -324,9 +324,18 @@ export class SmartRouter {
   }
 }
 
-// Every provider-selection flag route() might set or that a prior saved
-// profile might have left behind. Cleared before applying a decision so a
-// stale flag from a different provider can't linger alongside the pick.
+// Every provider-selection env var route() might set, or that a prior saved
+// profile might have left behind — flags, keys, base URLs, and models.
+// Cleared before applying a decision so a stale value from a different
+// provider can't linger alongside the pick. This must cover more than the
+// CLAUDE_CODE_USE_* flags: getUserSpecifiedModelSetting() (model.ts) reads
+// NVIDIA_MODEL/GEMINI_MODEL before OPENAI_MODEL, so a leftover NVIDIA_MODEL
+// from a saved NVIDIA profile would win over a route() decision to a
+// different provider even though CLAUDE_CODE_USE_NVIDIA was correctly
+// cleared — the request goes out to the new provider's endpoint asking for
+// the old provider's model name. (Found live: routing away from a saved
+// NVIDIA profile to Ollama correctly switched the endpoint but kept
+// requesting NVIDIA's model, which Ollama doesn't have.)
 const PROVIDER_FLAG_ENV_VARS = [
   'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_USE_GEMINI',
@@ -335,6 +344,15 @@ const PROVIDER_FLAG_ENV_VARS = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'GEMINI_API_KEY',
+  'GEMINI_BASE_URL',
+  'GEMINI_MODEL',
+  'NVIDIA_API_KEY',
+  'NVIDIA_BASE_URL',
+  'NVIDIA_MODEL',
 ] as const
 
 /**
