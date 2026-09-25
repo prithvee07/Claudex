@@ -65,3 +65,24 @@ These are workstation setup actions, not source-code changes:
   with no tracked lockfile changes.
 
 The package version remains 1.1.0. These changes are unreleased.
+
+## Windows CI coverage
+
+Status: implemented locally on `ci/windows-checks`; GitHub Actions validation is
+pending. This branch builds on the earlier build and router fixes.
+
+- Updated `.github/workflows/pr-checks.yml` with an Ubuntu/Windows matrix and
+  `fail-fast: false`, so a failing platform does not cancel the other job.
+  Both jobs run the existing build, smoke, provider, and recommendation checks.
+- Replaced the hardcoded Windows-only fixture in
+  `bin/import-specifier.test.mjs` with platform-native paths. Two cases verify
+  file-URL round trips for ordinary directories and names containing spaces,
+  `#`, and `%`, including a check that `#` does not become a URL fragment.
+- Added the import-specifier test to CI with
+  `node --test bin/import-specifier.test.mjs`.
+- Local Windows validation passed: two launcher tests, 58 provider tests,
+  41 provider recommendation tests, and `bun run smoke` (101 tests total).
+  Local validation used Node 24.19.0 and Bun 1.3.11; CI uses Node 22 and Bun
+  1.3.11. Ubuntu and hosted Windows runs have not yet been verified.
+
+Intended delivery: a separate contribution branch and pull request.
