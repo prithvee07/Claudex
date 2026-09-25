@@ -18,8 +18,11 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { loadConfig, type TelegramConfig } from './config.js'
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 
 // ── Load config ───────────────────────────────────────────────────────────────
 
@@ -37,13 +40,23 @@ if (!BOT_TOKEN) {
 const allowedFromEnv = (process.env.TELEGRAM_ALLOWED_IDS || '')
   .split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
 const ALLOWED_IDS = new Set<number>([...(cfg?.allowedIds ?? []), ...allowedFromEnv])
+const ALLOW_OPEN_ACCESS = process.env.TELEGRAM_ALLOW_OPEN_ACCESS === '1'
+
+if (ALLOWED_IDS.size === 0 && !ALLOW_OPEN_ACCESS) {
+  console.error('    No allowed Telegram user IDs configured.')
+  console.error('    Every allowed user gets shell/file access on this host — refusing to start open to the public.')
+  console.error('    Run: claudex telegram permit <your-telegram-id>')
+  console.error('    Or:  export TELEGRAM_ALLOWED_IDS=id1,id2')
+  console.error('    To intentionally allow ALL Telegram users, set TELEGRAM_ALLOW_OPEN_ACCESS=1')
+  process.exit(1)
+}
 
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(cfg?.idleTimeoutMs ?? 300_000), 10)
 const MAX_SESSIONS    = parseInt(process.env.MAX_SESSIONS    || String(cfg?.maxSessions   ?? 10),      10)
 const PROVIDER        = process.env.CLAUDEX_PROVIDER ?? cfg?.provider ?? ''
 
 const CLAUDEX_BIN  = process.env.CLAUDEX_BIN || 'node'
-const CLAUDEX_ARGS = process.env.CLAUDEX_BIN ? [] : [resolve(process.cwd(), 'dist/cli.mjs')]
+const CLAUDEX_ARGS = process.env.CLAUDEX_BIN ? [] : [resolve(SCRIPT_DIR, '../dist/cli.mjs')]
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -347,7 +360,7 @@ async function main(): Promise<void> {
   console.log(`   Bot:      @${me.result?.username}`)
   console.log(`   Provider: ${PROVIDER || 'from env'}`)
   console.log(`   Sessions: max ${MAX_SESSIONS}, idle ${Math.round(IDLE_TIMEOUT_MS / 60000)}min`)
-  console.log(`   Access:   ${ALLOWED_IDS.size > 0 ? `${ALLOWED_IDS.size} user(s) whitelisted` : 'open (no whitelist)'}`)
+  console.log(`   Access:   ${ALLOWED_IDS.size > 0 ? `${ALLOWED_IDS.size} user(s) whitelisted` : '⚠️  OPEN to all Telegram users (TELEGRAM_ALLOW_OPEN_ACCESS=1)'}`)
   console.log(`   Config:   ${loadConfig() ? '~/.claudex/telegram.json' : 'env vars only'}`)
 
   process.on('SIGINT', () => {

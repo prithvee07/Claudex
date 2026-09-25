@@ -386,3 +386,74 @@ test('sanitizes malformed MCP tool schemas before sending them to OpenAI', async
   expect(properties?.priority?.enum).toEqual([0, 1, 2, 3])
   expect(properties?.priority).not.toHaveProperty('default')
 })
+
+test('keeps a valid content-block sequence when a stream ends with a safety filter', async () => {
+  globalThis.fetch = (async (_input, _init) => {
+    const chunks = makeStreamChunks([
+      {
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        model: 'azure/gpt-4o',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: 'partial answer' },
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        model: 'azure/gpt-4o',
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: 'content_filter',
+          },
+        ],
+      },
+    ])
+
+    return makeSseResponse(chunks)
+  }) as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  const result = await client.beta.messages
+    .create({
+      model: 'azure/gpt-4o',
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: true,
+    })
+    .withResponse()
+
+  const events: Array<Record<string, unknown>> = []
+  for await (const event of result.data) {
+    events.push(event)
+  }
+
+  // Walk the sequence: every delta/stop must target a block that is
+  // currently open, and every opened block must be closed exactly once
+  // before message_stop — an invalid Anthropic SDK stream otherwise.
+  const openIndices = new Set<number>()
+  for (const event of events) {
+    if (event.type === 'content_block_start') {
+      expect(openIndices.has(event.index as number)).toBe(false)
+      openIndices.add(event.index as number)
+    } else if (event.type === 'content_block_delta' || event.type === 'content_block_stop') {
+      expect(openIndices.has(event.index as number)).toBe(true)
+      if (event.type === 'content_block_stop') openIndices.delete(event.index as number)
+    } else if (event.type === 'message_stop') {
+      expect(openIndices.size).toBe(0)
+    }
+  }
+
+  const deltaTexts = events
+    .filter(e => e.type === 'content_block_delta')
+    .map(e => (e.delta as { text?: string })?.text)
+  expect(deltaTexts).toContain('\n\n[Content blocked by provider safety filter]')
+})

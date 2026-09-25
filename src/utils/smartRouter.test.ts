@@ -51,3 +51,43 @@ for (const status of [401, 403]) {
     }
   })
 }
+
+test('recovery re-check gives a tripped provider a fresh error window', async () => {
+  const target = provider('flaky', 0)
+  globalThis.fetch = (async () => new Response(null, { status: 200 })) as typeof fetch
+
+  const originalSetTimeout = globalThis.setTimeout
+  // Capture the scheduled 60s recovery re-check instead of letting it fire,
+  // so the test can inspect the tripped state before triggering it manually.
+  let recoveryFn: (() => unknown) | undefined
+  globalThis.setTimeout = ((fn: () => unknown) => {
+    recoveryFn = fn
+    return 0 as unknown as ReturnType<typeof setTimeout>
+  }) as typeof setTimeout
+
+  try {
+    const router = new SmartRouter({ descriptors: [target] })
+    await router.route([]) // initializes — one healthy ping, 0 requests/errors recorded
+
+    // Trip unhealthy: 3 failed requests at a 100% error rate.
+    await router.recordResult('flaky', false, 100)
+    await router.recordResult('flaky', false, 100)
+    await router.recordResult('flaky', false, 100)
+
+    expect(router.status().find(s => s.provider === 'flaky')).toMatchObject({
+      healthy: false,
+      requests: 3,
+      errors: 3,
+    })
+
+    await recoveryFn?.()
+
+    expect(router.status().find(s => s.provider === 'flaky')).toMatchObject({
+      healthy: true,
+      requests: 0,
+      errors: 0,
+    })
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+  }
+})
