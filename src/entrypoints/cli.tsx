@@ -155,6 +155,23 @@ async function main(): Promise<void> {
     }
   }
 
+  // Opt-in: pings every configured provider once and routes this session to
+  // the best one by ROUTER_STRATEGY. Overrides whatever provider the saved
+  // profile/env above picked — see smartRouter.ts's module doc for the
+  // session-scoped (not per-request) limitation of this integration.
+  if (process.env.ROUTER_MODE === 'smart') {
+    const { SmartRouter, applyRouteDecisionToEnv } = await import('../utils/smartRouter.js')
+    try {
+      const decision = await new SmartRouter().route([])
+      applyRouteDecisionToEnv(process.env, decision)
+      console.error(`SmartRouter: routing this session to ${decision.provider} (${decision.model})`)
+    } catch (err) {
+      console.error(
+        `SmartRouter: ${err instanceof Error ? err.message : String(err)} — using the configured provider instead.`,
+      )
+    }
+  }
+
   validateProviderEnvOrExit()
 
   // Print the gradient startup screen before the Ink UI loads

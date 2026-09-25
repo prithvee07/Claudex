@@ -45,6 +45,26 @@ const PROVIDER_FLAG_MAP: Record<string, string> = {
   'ollama': 'CLAUDE_CODE_USE_OPENAI',
 }
 
+// Every env var any provider branch below can set. Cleared before applying
+// a newly selected provider's env so a previous provider's flag, key,
+// base URL, or model can't linger and get picked up by the shim's `??=`
+// fallback logic (which only fills in unset vars, so a stale value wins).
+const OTHER_PROVIDER_ENV_VARS = [
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_GEMINI',
+  'CLAUDE_CODE_USE_NVIDIA',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'GEMINI_API_KEY',
+  'GEMINI_BASE_URL',
+  'GEMINI_MODEL',
+  'NVIDIA_API_KEY',
+  'NVIDIA_BASE_URL',
+  'NVIDIA_MODEL',
+  'CODEX_API_KEY',
+] as const
+
 /**
  * Store credentials for a provider
  * This saves to both global config and the profile file
@@ -103,6 +123,17 @@ export function storeProviderCredentials(credentials: ProviderCredentials): void
     }
   }
   
+  // Clear every other provider's flag/key/base-url/model first — otherwise
+  // switching provider mid-session (e.g. OpenAI -> NVIDIA via /provider)
+  // leaves the old provider's OPENAI_API_KEY/OPENAI_BASE_URL sitting in
+  // process.env, and the shim's `??=` fallback logic (client.ts) treats
+  // them as already-set and never overwrites them with the new provider's
+  // values — the next request silently goes out with the old provider's
+  // credentials and endpoint.
+  for (const key of OTHER_PROVIDER_ENV_VARS) {
+    delete process.env[key]
+  }
+
   // Also set in current process environment for immediate use
   Object.entries(env).forEach(([key, value]) => {
     if (value) {
@@ -185,31 +216,45 @@ export function clearProviderCredentials(provider: string): void {
 }
 
 /**
+ * Picks the most recently stored provider's credentials from the
+ * accumulated providerCredentials record. Every `/provider` run adds an
+ * entry here and none are ever removed, so a user who has configured more
+ * than one provider over time has all of them sitting in this record —
+ * picking one deterministically (instead of applying every one) avoids two
+ * different providers' flags (e.g. CLAUDE_CODE_USE_OPENAI and
+ * CLAUDE_CODE_USE_GEMINI) ending up set simultaneously.
+ */
+export function selectMostRecentCredentials(
+  credentials: Record<string, { apiKey: string; storedAt: string }> | undefined,
+): [string, { apiKey: string; storedAt: string }] | undefined {
+  if (!credentials) return undefined
+  return Object.entries(credentials)
+    .filter((entry): entry is [string, { apiKey: string; storedAt: string }] => !!entry[1]?.apiKey)
+    .sort(([, a], [, b]) => b.storedAt.localeCompare(a.storedAt))[0]
+}
+
+/**
  * Apply stored credentials to environment
  * Call this at startup to ensure credentials are loaded
  */
 export function applyStoredCredentials(): void {
   const config = getGlobalConfig()
-  const credentials = config.providerCredentials
-  
-  if (!credentials) return
-  
-  // Apply each provider's credentials to environment
-  Object.entries(credentials).forEach(([provider, creds]) => {
-    if (creds?.apiKey) {
-      const apiKeyField = CREDENTIAL_KEY_MAP[provider]
-      if (apiKeyField) {
-        process.env[apiKeyField] = creds.apiKey
-      }
-      
-      // Also set provider flag
-      const providerFlag = PROVIDER_FLAG_MAP[provider]
-      if (providerFlag) {
-        process.env[providerFlag] = '1'
-      }
+  const mostRecent = selectMostRecentCredentials(config.providerCredentials)
+
+  if (mostRecent) {
+    const [provider, creds] = mostRecent
+    const apiKeyField = CREDENTIAL_KEY_MAP[provider]
+    if (apiKeyField) {
+      process.env[apiKeyField] = creds.apiKey
     }
-  })
-  
+
+    // Also set provider flag
+    const providerFlag = PROVIDER_FLAG_MAP[provider]
+    if (providerFlag) {
+      process.env[providerFlag] = '1'
+    }
+  }
+
   // Also load from profile file if exists
   const profile = loadProfileFile()
   if (profile?.env) {

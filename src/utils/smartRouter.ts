@@ -1,23 +1,31 @@
 /**
- * SmartRouter — intelligent auto-router for Claudex.
+ * SmartRouter — startup-time provider auto-selection for Claudex.
  *
- * Instead of always using one fixed provider, the smart router:
- * - Pings all configured providers on startup
- * - Scores them by latency, cost, and health
- * - Routes each request to the optimal provider
- * - Falls back automatically if a provider fails
- * - Learns from real request timings via exponential moving average
+ * When ROUTER_MODE=smart, src/entrypoints/cli.tsx pings every configured
+ * provider once at startup, scores them by latency/cost/health, and sets
+ * that session's provider env vars (applyRouteDecisionToEnv) to the winner.
+ *
+ * ponytail: this is session-scoped, not per-request. `route()` and
+ * `recordResult()` support re-scoring per message and reacting to live
+ * failures, but nothing calls them after startup — env vars are read from
+ * mutable global `process.env` throughout the shim, and Claudex can run
+ * sub-agents concurrently in-process (src/utils/swarm/), so re-routing
+ * mid-session by mutating process.env would let one in-flight request's
+ * provider choice leak into another's. `fallbackEnabled`/ROUTER_FALLBACK is
+ * likewise stored but unused — no automatic mid-session retry to a
+ * different provider. Upgrade path: thread the routed env through
+ * AsyncLocalStorage (or explicit params) instead of process.env so each
+ * request can carry its own provider choice safely, then call route()/
+ * recordResult() per request from claude.ts's withRetry getClient closure.
  *
  * Usage:
  *   const router = new SmartRouter()
- *   await router.initialize()
- *   const decision = await router.route(messages, 'claude-sonnet')
- *   // decision.env contains the env vars to set for the chosen provider
+ *   const decision = await router.route(messages, 'claude-sonnet') // self-initializes
+ *   applyRouteDecisionToEnv(process.env, decision)
  *
  * Environment variables:
  *   ROUTER_MODE=smart          — enable smart routing (default: fixed)
  *   ROUTER_STRATEGY=latency    — or: cost, balanced (default: balanced)
- *   ROUTER_FALLBACK=true       — auto-retry on failure (default: true)
  */
 
 export type RouterStrategy = 'latency' | 'cost' | 'balanced'
@@ -314,4 +322,31 @@ export class SmartRouter {
       score: s.healthy && isConfigured(s) ? Math.round(score(s, this.strategy) * 1000) / 1000 : 'N/A',
     }))
   }
+}
+
+// Every provider-selection flag route() might set or that a prior saved
+// profile might have left behind. Cleared before applying a decision so a
+// stale flag from a different provider can't linger alongside the pick.
+const PROVIDER_FLAG_ENV_VARS = [
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_GEMINI',
+  'CLAUDE_CODE_USE_GITHUB',
+  'CLAUDE_CODE_USE_NVIDIA',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+] as const
+
+/**
+ * Applies a RouteDecision to a process-env-shaped object: clears every known
+ * provider-selection flag, then sets the decision's own env vars.
+ */
+export function applyRouteDecisionToEnv(
+  env: NodeJS.ProcessEnv,
+  decision: RouteDecision,
+): void {
+  for (const flag of PROVIDER_FLAG_ENV_VARS) {
+    delete env[flag]
+  }
+  Object.assign(env, decision.env)
 }

@@ -224,3 +224,143 @@ introduced by these changes.
   the `CLAUDEX_ARGS` path fix.
 - `python3 -c "import yaml; yaml.safe_load(...)"`: validated syntax of all
   edited workflow YAML files.
+
+## README-vs-reality audit, Smart Router startup wiring, and credential-switch fixes
+
+A follow-up improvement pass: audited README.md's checkable claims against
+the code, wired the previously-dead Smart Router into a real (session-scoped)
+startup path, and reviewed the provider/credential code that hadn't been
+looked at yet (`credentialManager.ts`, `codexShim.ts`, `provider.tsx`) for
+the same class of cross-provider credential bug found earlier.
+
+### Fixed
+
+- **`claudex telegram ...` had no implementation** (`bin/claudex`): the
+  command is documented in README.md, telegram-gateway/README.md, and the
+  gateway's own runtime error messages, but the main `claudex` binary/CLI
+  program never registered a `telegram` subcommand — only the separate
+  `claudex-telegram` bin did. `bin/claudex` now detects `argv[2] ===
+  'telegram'` and delegates (spawns `claudex-telegram` with the remaining
+  args, inherits stdio), so every existing doc string and message is now
+  correct instead of needing to be rewritten to a smaller reality.
+- **Credential accumulation across `/provider` switches**
+  (`src/utils/credentialManager.ts`): `applyStoredCredentials()` applied the
+  flag/key for *every* provider ever configured via `/provider` (entries
+  accumulate in global config and are never removed), so two different
+  `CLAUDE_CODE_USE_*` flags could end up set simultaneously. Now applies
+  only the most-recently-stored provider via a new
+  `selectMostRecentCredentials()` helper.
+- **Stale provider env on mid-session switch**
+  (`src/utils/credentialManager.ts`): `storeProviderCredentials()` wrote the
+  newly selected provider's env vars into `process.env` but never cleared
+  the *previous* provider's flag/key/base-url/model. Switching OpenAI ->
+  NVIDIA mid-session left `OPENAI_API_KEY`/`OPENAI_BASE_URL` set; since the
+  shim's provider-detection in `client.ts` uses `??=` (fill-if-unset) when
+  translating NVIDIA's env into OpenAI's, the stale values silently won and
+  the next request went out with the old provider's key and endpoint. Now
+  clears every other provider's env vars before applying the new one.
+- **Truncated Codex stream reported as a successful turn**
+  (`src/services/api/codexShim.ts`): if the Codex SSE stream ended (dropped
+  connection, proxy timeout) without ever emitting
+  `response.completed`/`incomplete`/`failed`, `codexStreamToAnthropic()`
+  fell through to a normal-looking `message_delta` with `stop_reason:
+  'end_turn'` and zero usage — a silently truncated response looked
+  identical to a real, successful, empty turn. Now throws the same error
+  its non-streaming sibling `collectCodexCompletedResponse()` already used
+  for this exact case.
+- **`readSseEvents()` silently dropped the final SSE event**
+  (`src/services/api/codexShim.ts`): the parser only yielded events found
+  via `buffer.split('\n\n')` per chunk read; whatever remained in `buffer`
+  when the stream closed (`done`) was discarded without being parsed. Since
+  an SSE stream doesn't always send a trailing blank-line separator before
+  closing, this could drop the *last* event of any stream — including a
+  normal `response.completed`, which would otherwise make a real completion
+  look identical to the truncated-stream case above. Found via the
+  regression test for the previous fix (the existing fixture's
+  `response.completed` was silently being dropped, and the resulting event
+  types happened to look the same as the fixed error case). Now flushes any
+  remaining non-empty buffer after the read loop exits.
+- **Broken error headers on three `codexShim.ts` throw sites**: `throw
+  APIError.generate(..., {} as Record<string, string>)` passed a plain
+  object where the Anthropic SDK's error constructor calls `.get()` on it —
+  crashing with `headers?.get is not a function` instead of raising the
+  intended error, masking the real failure behind an unrelated `TypeError`.
+  Two of the three predate this session (`collectCodexCompletedResponse`'s
+  `response.failed` and empty-payload throws); the third was introduced by
+  this session's own fix above and inherited the same broken pattern from
+  its neighbors. All three now pass a real `Headers()` instance.
+- **Fragile provider-key selection in `/provider`**
+  (`src/commands/provider/provider.tsx`, `finishProfileSave()`): picked the
+  API key/base-url/model to persist via an OR-chain over every provider's
+  env field (`env.OPENAI_API_KEY || env.GEMINI_API_KEY || ...`) instead of
+  switching on the `profile` type already being saved. Currently safe only
+  because each `buildXProfileEnv()` builder happens to populate exclusively
+  its own provider's fields — same fragile shape as the NVIDIA/OpenAI
+  fallback bug fixed earlier this session. Now switches explicitly on
+  `profile`.
+
+### Added
+
+- **Smart Router startup wiring** (`src/entrypoints/cli.tsx`,
+  `src/utils/smartRouter.ts`): `ROUTER_MODE=smart` was previously
+  documented in README.md but never connected to anything — `smartRouter.ts`
+  was imported by nothing outside itself and its test file. `cli.tsx` now
+  pings every configured provider once at startup (after profile/credential
+  resolution, before provider validation) and applies the winning
+  provider's env via a new exported `applyRouteDecisionToEnv()` helper,
+  which also clears conflicting provider flags a prior profile might have
+  left set. Deliberately scoped to session-level (not per-request) routing
+  — the module doc in `smartRouter.ts` explains why (env vars are read from
+  mutable global `process.env` throughout the shim, and Claudex can run
+  sub-agents concurrently in-process via `src/utils/swarm/`, so per-request
+  re-routing by mutating `process.env` would let one in-flight request's
+  provider choice leak into another's) and what a concurrency-safe
+  per-request version would need (AsyncLocalStorage or explicit param
+  threading instead of global env mutation). Verified live: with
+  `ROUTER_MODE=smart` set and a local Ollama server reachable, the CLI
+  correctly pinged it, selected it as the zero-cost/no-key-needed option,
+  and the normal request pipeline picked up the routed env vars.
+- **Regression tests**: `src/utils/smartRouter.test.ts`
+  (`applyRouteDecisionToEnv` clears a conflicting flag),
+  `src/utils/credentialManager.test.ts` (new file —
+  `selectMostRecentCredentials` picks the latest `storedAt` entry and skips
+  empty keys; `storeProviderCredentials` clears the previous provider's env
+  on switch), `src/services/api/codexShim.test.ts` (errors instead of
+  reporting a truncated stream as a successful turn — this test is what
+  surfaced the `readSseEvents` buffer-flush bug above).
+
+### Changed
+
+- **Provider test command** (`package.json`): added
+  `src/utils/credentialManager.test.ts` to `test:provider`.
+
+### Not fixed (investigated, decided against or out of scope)
+
+- `provider.tsx`: no inline validation on user-entered base URLs before
+  they're persisted — malformed values only surface as a raw `fetch()`
+  error later. Low severity, UX polish rather than a bug; not addressed
+  this pass.
+- `providerProfile.ts`'s `looksLikeSecretValue()` only recognizes `sk-`/
+  `AIza`-shaped keys for its heuristic redaction fallback, not NVIDIA's
+  `nvapi-` or Codex's JWT shape. The exact-match `collectSecretValues` path
+  is the real protection for those two; this heuristic is a secondary
+  fallback. Low severity, not addressed this pass.
+
+### Validation recorded during implementation
+
+- `bun test src/services/api/codexShim.test.ts`: 10/10 pass (8 pre-existing
+  + 2 new).
+- `bun test src/utils/credentialManager.test.ts`: 4/4 pass (new file).
+- `bun test src/utils/smartRouter.test.ts`: 6/6 pass (5 pre-existing + 1
+  new).
+- `bun run test:provider`: 66/66 pass across 10 files.
+- `bun run test:provider-recommendation`: 43/43 pass across 2 files.
+- `node --test bin/import-specifier.test.mjs`: 2/2 pass.
+- `bun run smoke`: passed, building `dist/cli.mjs` and printing
+  `1.1.0 (Cluadex)`.
+- `git diff --check`: passed (no whitespace errors).
+- `node bin/claudex telegram` / `node bin/claudex telegram status` / `node
+  bin/claudex --version`: manually verified the telegram delegation works
+  and normal invocation is unaffected.
+- `ROUTER_MODE=smart node dist/cli.mjs --print "test"`: manually verified
+  live end-to-end (see Smart Router entry above).
