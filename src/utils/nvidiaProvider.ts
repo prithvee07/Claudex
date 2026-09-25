@@ -104,7 +104,7 @@ export function buildNvidiaProfileEnv(options: {
   processEnv?: Record<string, string | undefined>
 }): { CLAUDE_CODE_USE_NVIDIA: string; NVIDIA_BASE_URL: string; NVIDIA_MODEL: string; NVIDIA_API_KEY?: string } | null {
   const processEnv = options.processEnv ?? (typeof process !== 'undefined' ? process.env : {})
-  const key = options.apiKey ?? processEnv['NVIDIA_API_KEY'] ?? processEnv['OPENAI_API_KEY']
+  const key = options.apiKey ?? processEnv['NVIDIA_API_KEY']
   if (!key) return null
 
   return {

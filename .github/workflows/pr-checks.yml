@@ -4,11 +4,17 @@ on:
   pull_request:
   push:
     branches:
+      - dev
+      - test
       - main
 
 jobs:
   smoke-and-tests:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Check out repository
@@ -29,6 +35,9 @@ jobs:
 
       - name: Smoke check
         run: bun run smoke
+
+      - name: Launcher import tests
+        run: node --test bin/import-specifier.test.mjs
 
       - name: Provider tests
         run: bun run test:provider
